@@ -1,19 +1,34 @@
 package com.xpn.xwiki.nnapz;
 
-
-import com.xpn.xwiki.XWiki;
 import com.xpn.xwiki.XWikiContext;
 import com.xpn.xwiki.XWikiException;
+import com.xpn.xwiki.doc.XWikiDocument;
 import com.xpn.xwiki.user.api.XWikiUser;
 import com.xpn.xwiki.user.impl.xwiki.XWikiAuthServiceImpl;
 import com.xpn.xwiki.user.impl.xwiki.XWikiAuthenticator;
+import net.sf.json.JSONArray;
+import net.sf.json.JSONObject;
+import org.apache.http.HttpEntity;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.ClientProtocolException;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.methods.HttpUriRequest;
+import org.apache.http.client.methods.RequestBuilder;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.util.EntityUtils;
 import org.securityfilter.filter.SecurityRequestWrapper;
 import org.securityfilter.realm.SimplePrincipal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.xwiki.model.reference.DocumentReference;
 
 import javax.servlet.http.HttpServletRequest;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.security.Principal;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Authenticates calls from PCG that come along with a token and system parameter.
@@ -47,7 +62,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
     public XWikiUser checkAuth(XWikiContext context) throws XWikiException {
         final HttpServletRequest req = context.getRequest().getHttpServletRequest();
 
-        LOGGER.warn("***++ CTX user: " + context.getUserReference());
+        LOGGER.warn("*** CTX user: " + context.getUserReference());
 
         /*
         HttpSession session = req.getSession(false);
@@ -89,6 +104,10 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
             }
             return super.checkAuth(context); // should forward to login
         }
+        if (token.length() > 300) {
+            LOGGER.error("Token has unusual size, abort");
+            return null;
+        }
         // else create and store to session
         LOGGER.warn("Getting PCG Auth for " + token + " Wiki " + context.getWikiId());
         String system = req.getParameter("oo-system");
@@ -97,47 +116,123 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
             return null;
         }
         // API call to oo
+        JSONArray authenticatedUser;
+        try {
+            authenticatedUser = callOO(system, token);
+        } catch (URISyntaxException e) {
+            LOGGER.error("Wrong URL for " + system + ": " + e.getMessage());
+            return null;
+        } catch (IOException e) {
+            LOGGER.error("Call failed for " + system + ": " + e.getMessage());
+            return null;
+        }
+        if (authenticatedUser == null) {
+            LOGGER.error("Call failed for " + system + ": no data returned ");
+            return null;
+        }
+        // we assume BobSchulte camelcase usernames
+        final String firstName = authenticatedUser.getString(3);
+        final String lastName = authenticatedUser.getString(4);
+        String fullUserName = firstName + lastName;
+        LOGGER.warn("Got authenthicated user " + fullUserName);
+        final String fullWikiName = "XWiki." + fullUserName;
 
-        String name = token;
-        final String fullName = "XWiki." + name;
+        if (findUser(fullUserName, context) == null) {
+            // add this to xwiki.cfg: wiki.users.initialGroups=XWiki.XWikiAllGroup,XWiki.PCG-User
+            createUser(fullUserName, firstName, lastName, system, context);
+        }
 
-        createUserIfNeeded(name, fullName, context);
+        wrappedRequest.setUserPrincipal(new SimplePrincipal(context.getWikiId() + ":" + fullUserName));
+        return new XWikiUser(fullWikiName);
+    }
 
-        wrappedRequest.setUserPrincipal(new SimplePrincipal(context.getWikiId() + ":" + name));
-        return new XWikiUser(fullName);
+    private static final String AUTH_URL = "https://oekobox-online.de/v3/shop/";
+
+    private JSONArray callOO(String system, String token) throws URISyntaxException, IOException {
+        HttpClient httpClient = HttpClients.createDefault();
+        HttpUriRequest loginRequest = RequestBuilder.post()
+            .setUri(new URI(AUTH_URL + system + "/api/logon"))
+            .addParameter("token", token).build();
+        // should be a {action: "Logon", result: "<result>"}, see https://oekobox-online.de/shopdocu/wiki/API.methods.logon
+        JSONObject loginResult = getRemoteResponse(httpClient, loginRequest);
+        LOGGER.warn("api/logon " + loginResult.toString()) ;
+        String result = loginResult.getString("result");
+        if (result == null || !result.equals("ok") && !result.equals("relogon")) {
+            throw new ClientProtocolException("Authentication failed: " + result);
+        }
+        // fetch user info
+        HttpUriRequest userDataRequest = RequestBuilder.post()
+                    .setUri(new URI(AUTH_URL + system + "/api/user")).build();
+        JSONObject userDataResult = getRemoteResponse(httpClient, userDataRequest);
+        LOGGER.warn("api/user " + userDataResult.toString()) ;
+        JSONArray ret = userDataResult.getJSONArray("data").getJSONArray(0);
+        LOGGER.warn("Parsed to " + ret.toString()) ;
+        return ret;
+    }
+
+    private JSONObject getRemoteResponse(HttpClient httpClient, HttpUriRequest request) throws IOException {
+        HttpResponse res = httpClient.execute(request);
+        int status = res.getStatusLine().getStatusCode();
+        if (status < 200 || status > 300) {
+            throw new ClientProtocolException("Unexpected response status for logon call: " + status);
+        }
+        HttpEntity entity = res.getEntity();
+        String authResponse = entity != null ? EntityUtils.toString(entity) : null;
+        if (authResponse == null) {
+            throw new ClientProtocolException("No response text");
+        }
+        return JSONObject.fromObject(authResponse);
+    }
+
+    // clone of super
+    protected String createUser(String user, String firstName, String lastName, String system, XWikiContext context) throws XWikiException {
+        String createuser = getParam("auth_createuser", context);
+
+        if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("Create user param is " + createuser);
+        }
+
+        if (createuser != null) {
+            String wikiname = context.getWiki().clearName(user, true, true, context);
+            XWikiDocument userdoc =
+                    context.getWiki().getDocument(new DocumentReference(context.getWikiId(), "XWiki", wikiname), context);
+            if (userdoc.isNew()) {
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug("User page does not exist for user " + user);
+                }
+
+                if ("empty".equals(createuser)) {
+                    if (LOGGER.isDebugEnabled()) {
+                        LOGGER.debug("Creating emptry user for user " + user);
+                    }
+
+                    Map<String, String> map = new HashMap<>();
+                    map.put("active", "1");
+                    map.put("first_name", firstName);
+                    map.put("last_name", lastName);
+                    map.put("company", system);
+
+                    if (context.getWiki().createUser(wikiname, map, "edit", context) == 1) {
+                        LOGGER.warn("Created user " + wikiname);
+                    } else {
+                        LOGGER.warn("Creating user failed" + wikiname);
+                    }
+                }
+            } else {
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug("User page already exists for user " + user);
+                }
+            }
+
+            return wikiname;
+        }
+
+        return user;
     }
 
     private SecurityRequestWrapper getSecurityRequestWrapper(XWikiContext context, HttpServletRequest req) throws XWikiException {
         XWikiAuthenticator auth = getAuthenticator(context);
         return new SecurityRequestWrapper(req, null, null, auth.getAuthMethod());
-    }
-
-    /**
-     * Create a user if none exists.
-     *
-     * @param name     the short name, must be scrubbed of chars which XWiki doesn't like.
-     * @param fullName name, prefixed with 'XWiki.'.
-     * @param context  the ball of mud.
-     * @throws XWikiException if thrown by {@link XWiki()}.
-     */
-    private void createUserIfNeeded(final String name,
-                                    final String fullName,
-                                    final XWikiContext context) throws XWikiException {
-        final String database = context.getDatabase();
-        try {
-            // Switch to main wiki to force users to be global users
-            context.setDatabase(context.getMainXWiki());
-
-            final XWiki wiki = context.getWiki();
-
-            // test if user already exists
-            if (!wiki.exists(fullName, context)) {
-                LOGGER.info("Need to create user [{0}]", fullName);
-                wiki.createEmptyUser(name, "edit", context);
-            }
-        } finally {
-            context.setDatabase(database);
-        }
     }
 }
 
