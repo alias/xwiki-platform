@@ -32,8 +32,8 @@ import java.util.Map;
 
 /**
  * Authenticates calls from PCG that come along with a token and system parameter.
- * The token is forward to auth in oekobox-online.de. If that succeeds, the returned user information is used to look
- * up the local user. If that does not exist yet, we create it and set it to the Role "Anwender".
+ * The token is forwarded to auth in oekobox-online.de's API. If that succeeds, the returned user information is used
+ * to look up the local user. If she does not exist yet, we create it.
  *
  * If these parameters are not there, we forward to the standard auth class.
  *
@@ -45,18 +45,16 @@ import java.util.Map;
  * * 3) build "XWIKI Platform - Legacy - Old Core"  (repacks somehow)
  * * 4) copy the resulting jar (xwiki-platform-legacy-oldcore-9.6.1-SNAPSHOT.jar)
  *         and override the installed xwiki-platform-legacy-oldcore-9.6.jar
- *         
+ *
+ * From studying http://platform.xwiki.org/xwiki/bin/view/AdminGuide/Authentication ff (and sandbox)
+ *
  * @author Bob Schulze
  * @version $Id$
  * @since 9.6.x
  */
 public class PcgAuthenticator extends XWikiAuthServiceImpl {
 
-    /**
-     * Lawg dawg.
-     */
     private static final Logger LOGGER = LoggerFactory.getLogger(PcgAuthenticator.class);
-
 
     @Override
     public XWikiUser checkAuth(XWikiContext context) throws XWikiException {
@@ -64,23 +62,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
 
         LOGGER.warn("*** CTX user: " + context.getUserReference());
 
-        /*
-        HttpSession session = req.getSession(false);
-        if (session == null) {
-            LOGGER.warn("No session");
-        } else {
-            Enumeration sps = session.getAttributeNames();
-            while (sps.hasMoreElements()) {
-                String pn = (String) sps.nextElement();
-                try {
-                    LOGGER.warn("   " + pn + ": " + session.getAttribute(pn).getClass());
-                } catch (Throwable twb) {
-                    LOGGER.warn("   " + pn + ": (unreadable: " + twb.getMessage() + ")");
-                }
-            }
-        }
-        */
-        // are we a regular form authentication or any other auth action that we better do not interfere?
+        // are we in a regular form authentication or any other auth action that we better do not interfere?
         if (req.getParameter("j_username") != null || req.getParameter("srid") != null
                  || req.getPathInfo().toLowerCase().contains("logout")) {
             LOGGER.warn("auth activity, delegate to parent " + super.getClass());
@@ -88,7 +70,6 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         }
         // try our token
         String token = req.getParameter("oo-token");
-        // some validation
         SecurityRequestWrapper wrappedRequest = getSecurityRequestWrapper(context, req);
         if (token == null) {
             // check if we have one already
@@ -104,17 +85,21 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
             }
             return super.checkAuth(context); // should forward to login
         }
+
+        // some validation
         if (token.length() > 300) {
             LOGGER.error("Token has unusual size, abort");
             return null;
         }
-        // else create and store to session
+
+        // lets try pcg auth
         LOGGER.warn("Getting PCG Auth for " + token + " Wiki " + context.getWikiId());
         String system = req.getParameter("oo-system");
         if (system == null || system.trim().length() == 0) {
             LOGGER.error("oo-system parameter missing. Ignore auth request.");
             return null;
         }
+
         // API call to oo
         JSONArray authenticatedUser;
         try {
@@ -130,6 +115,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
             LOGGER.error("Call failed for " + system + ": no data returned ");
             return null;
         }
+
         // we assume BobSchulte camelcase usernames
         final String firstName = authenticatedUser.getString(3);
         final String lastName = authenticatedUser.getString(4);
@@ -148,6 +134,12 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
 
     private static final String AUTH_URL = "https://oekobox-online.de/v3/shop/";
 
+    /**
+     * Do the actual oo call
+     * @param system for dispatching the call
+     * @param token  see description in oo:LPCGAuthenticator.java
+     * @return a Json Array for a User Object per API (oekobox-online)
+     */
     private JSONArray callOO(String system, String token) throws URISyntaxException, IOException {
         HttpClient httpClient = HttpClients.createDefault();
         HttpUriRequest loginRequest = RequestBuilder.post()
@@ -170,6 +162,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         return ret;
     }
 
+    // helper to do a remote call
     private JSONObject getRemoteResponse(HttpClient httpClient, HttpUriRequest request) throws IOException {
         HttpResponse res = httpClient.execute(request);
         int status = res.getStatusLine().getStatusCode();
@@ -184,7 +177,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         return JSONObject.fromObject(authResponse);
     }
 
-    // clone of super
+    // clone of super to avoid touching another class. A bit DRY though
     protected String createUser(String user, String firstName, String lastName, String system, XWikiContext context) throws XWikiException {
         String createuser = getParam("auth_createuser", context);
 
@@ -212,7 +205,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
                     map.put("last_name", lastName);
                     map.put("company", system);
 
-                    if (context.getWiki().createUser(wikiname, map, "edit", context) == 1) {
+                    if (context.getWiki().createUser(wikiname, map, "edit", context) == 1) {  // see config, to add the user to the right groups too
                         LOGGER.warn("Created user " + wikiname);
                     } else {
                         LOGGER.warn("Creating user failed" + wikiname);
