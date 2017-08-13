@@ -639,6 +639,7 @@
             <id>default</id>
             <configuration>
               <excludes>
+                **/PcgAuthenticator.java,
                 **/XWikiConfig.java,
                 **/XWikiConstant.java,
                 **/XWikiContext.java,
