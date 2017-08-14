@@ -122,10 +122,10 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         String fullUserName = firstName + lastName;
         LOGGER.warn("Got authenthicated user " + fullUserName);
         final String fullWikiName = "XWiki." + fullUserName;
-
+        final String email = authenticatedUser.getString(13);
         if (findUser(fullUserName, context) == null) {
             // add this to xwiki.cfg: wiki.users.initialGroups=XWiki.XWikiAllGroup,XWiki.PCG-User
-            createUser(fullUserName, firstName, lastName, system, context);
+            createUser(fullUserName, firstName, lastName, system, email, context);
         }
 
         wrappedRequest.setUserPrincipal(new SimplePrincipal(context.getWikiId() + ":" + fullUserName));
@@ -154,9 +154,9 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         }
         // fetch user info
         HttpUriRequest userDataRequest = RequestBuilder.post()
-                    .setUri(new URI(AUTH_URL + system + "/api/user")).build();
+                    .setUri(new URI(AUTH_URL + system + "/api/user8")).build();
         JSONObject userDataResult = getRemoteResponse(httpClient, userDataRequest);
-        LOGGER.warn("api/user " + userDataResult.toString()) ;
+        LOGGER.warn("api/user8 " + userDataResult.toString()) ;
         JSONArray ret = userDataResult.getJSONArray("data").getJSONArray(0);
         LOGGER.warn("Parsed to " + ret.toString()) ;
         return ret;
@@ -178,12 +178,11 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
     }
 
     // clone of super to avoid touching another class. A bit DRY though
-    protected String createUser(String user, String firstName, String lastName, String system, XWikiContext context) throws XWikiException {
+    protected String createUser(String user, String firstName, String lastName, String system, String email, XWikiContext context) throws XWikiException {
         String createuser = getParam("auth_createuser", context);
 
-        if (LOGGER.isDebugEnabled()) {
-            LOGGER.debug("Create user param is " + createuser);
-        }
+        LOGGER.warn("Create user param is " + createuser);
+        LOGGER.warn("Createing " + user + "/" + system + "/" + email);
 
         if (createuser != null) {
             String wikiname = context.getWiki().clearName(user, true, true, context);
@@ -204,6 +203,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
                     map.put("first_name", firstName);
                     map.put("last_name", lastName);
                     map.put("company", system);
+                    map.put("email", email);
 
                     if (context.getWiki().createUser(wikiname, map, "edit", context) == 1) {  // see config, to add the user to the right groups too
                         LOGGER.warn("Created user " + wikiname);
