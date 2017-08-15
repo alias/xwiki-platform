@@ -101,7 +101,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         }
 
         // API call to oo
-        JSONArray authenticatedUser;
+        JSONArray[] authenticatedUser;
         try {
             authenticatedUser = callOO(system, token);
         } catch (URISyntaxException e) {
@@ -111,21 +111,21 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
             LOGGER.error("Call failed for " + system + ": " + e.getMessage());
             return null;
         }
-        if (authenticatedUser == null) {
+        if (authenticatedUser[0] == null || authenticatedUser[1] == null) {
             LOGGER.error("Call failed for " + system + ": no data returned ");
             return null;
         }
 
         // we assume BobSchulte camelcase usernames
-        final String firstName = authenticatedUser.getString(3);
-        final String lastName = authenticatedUser.getString(4);
+        final String firstName = authenticatedUser[0].getString(3);
+        final String lastName = authenticatedUser[0].getString(4);
         String fullUserName = firstName + lastName;
         LOGGER.warn("Got authenthicated user " + fullUserName);
         final String fullWikiName = "XWiki." + fullUserName;
-        final String email = authenticatedUser.getString(13);
+        final String email = authenticatedUser[0].getString(13);
         if (findUser(fullUserName, context) == null) {
             // add this to xwiki.cfg: wiki.users.initialGroups=XWiki.XWikiAllGroup,XWiki.PCG-User
-            createUser(fullUserName, firstName, lastName, system, email, context);
+            createUser(fullUserName, firstName, lastName, authenticatedUser[1].getString(0) + " (" + system + ")", email, context);
         }
 
         wrappedRequest.setUserPrincipal(new SimplePrincipal(context.getWikiId() + ":" + fullUserName));
@@ -140,13 +140,13 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
      * @param token  see description in oo:LPCGAuthenticator.java
      * @return a Json Array for a User Object per API (oekobox-online)
      */
-    private JSONArray callOO(String system, String token) throws URISyntaxException, IOException {
+    private JSONArray[] callOO(String system, String token) throws URISyntaxException, IOException {
         HttpClient httpClient = HttpClients.createDefault();
         HttpUriRequest loginRequest = RequestBuilder.post()
             .setUri(new URI(AUTH_URL + system + "/api/logon"))
             .addParameter("token", token).build();
         // should be a {action: "Logon", result: "<result>"}, see https://oekobox-online.de/shopdocu/wiki/API.methods.logon
-        JSONObject loginResult = getRemoteResponse(httpClient, loginRequest);
+        JSONObject loginResult = JSONObject.fromObject(getRemoteResponse(httpClient, loginRequest));
         LOGGER.warn("api/logon " + loginResult.toString()) ;
         String result = loginResult.getString("result");
         if (result == null || !result.equals("ok") && !result.equals("relogon")) {
@@ -155,26 +155,34 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         // fetch user info
         HttpUriRequest userDataRequest = RequestBuilder.post()
                     .setUri(new URI(AUTH_URL + system + "/api/user8")).build();
-        JSONObject userDataResult = getRemoteResponse(httpClient, userDataRequest);
+        JSONArray userDataResult = JSONArray.fromObject(getRemoteResponse(httpClient, userDataRequest));
         LOGGER.warn("api/user8 " + userDataResult.toString()) ;
-        JSONArray ret = userDataResult.getJSONArray("data").getJSONArray(0);
-        LOGGER.warn("Parsed to " + ret.toString()) ;
-        return ret;
+        JSONArray ret = userDataResult.getJSONObject(0).getJSONArray("data").getJSONArray(0);
+        LOGGER.warn("Parsed user to " + ret.toString()) ;
+        // system name
+        HttpUriRequest configRequest = RequestBuilder.post()
+                    .setUri(new URI(AUTH_URL + system + "/api/configuration2")).build();
+        JSONArray configResult = JSONArray.fromObject(getRemoteResponse(httpClient, configRequest));
+        LOGGER.warn("api/configuration2 " + configResult.toString()) ;
+        JSONArray ret1 = configResult.getJSONObject(0).getJSONArray("data").getJSONArray(0);
+        LOGGER.warn("Parsed config to " + ret1.toString()) ;
+
+        return new JSONArray[] {ret, ret1};
     }
 
     // helper to do a remote call
-    private JSONObject getRemoteResponse(HttpClient httpClient, HttpUriRequest request) throws IOException {
+    private String getRemoteResponse(HttpClient httpClient, HttpUriRequest request) throws IOException {
         HttpResponse res = httpClient.execute(request);
         int status = res.getStatusLine().getStatusCode();
         if (status < 200 || status > 300) {
             throw new ClientProtocolException("Unexpected response status for logon call: " + status);
         }
         HttpEntity entity = res.getEntity();
-        String authResponse = entity != null ? EntityUtils.toString(entity) : null;
-        if (authResponse == null) {
+        String callResponse = entity != null ? EntityUtils.toString(entity) : null;
+        if (callResponse == null) {
             throw new ClientProtocolException("No response text");
         }
-        return JSONObject.fromObject(authResponse);
+        return callResponse;
     }
 
     // clone of super to avoid touching another class. A bit DRY though
