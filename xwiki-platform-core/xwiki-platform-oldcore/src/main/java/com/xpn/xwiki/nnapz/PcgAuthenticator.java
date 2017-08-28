@@ -99,11 +99,16 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
             LOGGER.error("oo-system parameter missing. Ignore auth request.");
             return null;
         }
+        String server = req.getParameter("oo-server");
+        if (server == null || server.trim().length() == 0) {
+            LOGGER.warn("oo-server parameter missing. use de.");
+            server = "orkobox-online.de";
+        }
 
         // API call to oo
         JSONArray[] authenticatedUser;
         try {
-            authenticatedUser = callOO(system, token);
+            authenticatedUser = callOO(server, system, token);
         } catch (URISyntaxException e) {
             LOGGER.error("Wrong URL for " + system + ": " + e.getMessage());
             return null;
@@ -116,10 +121,10 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
             return null;
         }
 
-        // we assume BobSchulte camelcase usernames
+        // we assume BobSchulze camelcase usernames
         final String firstName = authenticatedUser[0].getString(3);
         final String lastName = authenticatedUser[0].getString(4);
-        String fullUserName = firstName + lastName;
+        String fullUserName = replaceUmlauts(firstName + lastName);
         LOGGER.warn("Got authenthicated user " + fullUserName);
         final String fullWikiName = "XWiki." + fullUserName;
         final String email = authenticatedUser[0].getString(13);
@@ -132,18 +137,25 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         return new XWikiUser(fullWikiName);
     }
 
-    private static final String AUTH_URL = "https://oekobox-online.de/v3/shop/";
+    private String replaceUmlauts(String s) {
+        return s.replace("Ö", "Oe").replace("ö", "oe")
+         .replace("Ü", "Ue").replace("ü", "üe")
+         .replace("Ä", "Ae").replace("ä", "ae")
+         .replace("ß", "ss");
+    }
 
     /**
      * Do the actual oo call
+     * @param server the server to contact 
      * @param system for dispatching the call
      * @param token  see description in oo:LPCGAuthenticator.java
      * @return a Json Array for a User Object per API (oekobox-online)
      */
-    private JSONArray[] callOO(String system, String token) throws URISyntaxException, IOException {
+    private JSONArray[] callOO(String server, String system, String token) throws URISyntaxException, IOException {
         HttpClient httpClient = HttpClients.createDefault();
+        final String baseUrl = "https://" + server + "/v3/shop/" + system;
         HttpUriRequest loginRequest = RequestBuilder.post()
-            .setUri(new URI(AUTH_URL + system + "/api/logon"))
+            .setUri(new URI(baseUrl + "/api/logon"))
             .addParameter("token", token).build();
         // should be a {action: "Logon", result: "<result>"}, see https://oekobox-online.de/shopdocu/wiki/API.methods.logon
         JSONObject loginResult = JSONObject.fromObject(getRemoteResponse(httpClient, loginRequest));
@@ -154,14 +166,14 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         }
         // fetch user info
         HttpUriRequest userDataRequest = RequestBuilder.post()
-                    .setUri(new URI(AUTH_URL + system + "/api/user8")).build();
+                    .setUri(new URI(baseUrl + "/api/user8")).build();
         JSONArray userDataResult = JSONArray.fromObject(getRemoteResponse(httpClient, userDataRequest));
         LOGGER.warn("api/user8 " + userDataResult.toString()) ;
         JSONArray ret = userDataResult.getJSONObject(0).getJSONArray("data").getJSONArray(0);
         LOGGER.warn("Parsed user to " + ret.toString()) ;
         // system name
         HttpUriRequest configRequest = RequestBuilder.post()
-                    .setUri(new URI(AUTH_URL + system + "/api/configuration2")).build();
+                    .setUri(new URI(baseUrl+ "/api/configuration2")).build();
         JSONArray configResult = JSONArray.fromObject(getRemoteResponse(httpClient, configRequest));
         LOGGER.warn("api/configuration2 " + configResult.toString()) ;
         JSONArray ret1 = configResult.getJSONObject(0).getJSONArray("data").getJSONArray(0);
@@ -175,7 +187,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         HttpResponse res = httpClient.execute(request);
         int status = res.getStatusLine().getStatusCode();
         if (status < 200 || status > 300) {
-            throw new ClientProtocolException("Unexpected response status for logon call: " + status);
+            throw new ClientProtocolException("Unexpected response status for call to " + request.getURI() + ": " + status);
         }
         HttpEntity entity = res.getEntity();
         String callResponse = entity != null ? EntityUtils.toString(entity) : null;
