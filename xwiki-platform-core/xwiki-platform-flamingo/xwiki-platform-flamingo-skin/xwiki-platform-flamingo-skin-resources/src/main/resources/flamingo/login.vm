@@ -58,6 +58,13 @@
       <input id="rememberme" type="checkbox" name="j_rememberme" value="true" tabindex="300"/> $services.localization.render('remembermeonthiscomp')
     </label>
   </dd>
+  <dd>
+    <label class="xHint" for="usepcg">
+        <!--   <input id="usepcg" type="checkbox" name="j_rememberme" value="true" tabindex="300"/> $services.localization.render('usepcg')  -->
+        <input id="usepcg" type="checkbox" name="usepcg" value="true" tabindex="300"/> Verwende PCG Anmeldung mit Email als Benutzername
+    </label>
+   </dd>
+
   <dt><input type="submit" class="btn btn-primary col-xs-12" value="$services.localization.render('login')" tabindex="400"/></dt>
 </dl>
 #xwikimessageboxend()

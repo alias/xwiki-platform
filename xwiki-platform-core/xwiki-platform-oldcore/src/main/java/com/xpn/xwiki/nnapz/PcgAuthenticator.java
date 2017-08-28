@@ -48,30 +48,38 @@ import java.util.Map;
  *
  * From studying http://platform.xwiki.org/xwiki/bin/view/AdminGuide/Authentication ff (and sandbox)
  *
+ * Use xwiki.authentication.authclass=com.xpn.xwiki.nnapz.PcgAuthenticator in config
+ * Change logon form ./skins/flamingo/login.vm to add usepcg checkbox
+ *
  * @author Bob Schulze
  * @version $Id$
  * @since 9.6.x
  */
 public class PcgAuthenticator extends XWikiAuthServiceImpl {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(PcgAuthenticator.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(PcgAuthenticator.class);   // use warn only to avoid fiddling with log settings ;-)
 
     @Override
     public XWikiUser checkAuth(XWikiContext context) throws XWikiException {
         final HttpServletRequest req = context.getRequest().getHttpServletRequest();
 
-        LOGGER.warn("*** CTX user: " + context.getUserReference());
+        //LOGGER.warn("*** CTX user: " + context.getUserReference());
+        boolean usepcg = req.getParameter("usepcg") != null;
+        final String j_username = req.getParameter("j_username");
+        final String j_password = req.getParameter("j_password");
+        String token = req.getParameter("oo-token");
+        String system = req.getParameter("oo-system");
 
+        LOGGER.warn("*** checkAuth: " + usepcg + "/" + j_username + "/" + token + "/" + system);
         // are we in a regular form authentication or any other auth action that we better do not interfere?
-        if (req.getParameter("j_username") != null || req.getParameter("srid") != null
-                 || req.getPathInfo().toLowerCase().contains("logout")) {
-            LOGGER.warn("auth activity, delegate to parent " + super.getClass());
+        if (req.getPathInfo().toLowerCase().contains("logout")) {
+            LOGGER.warn("logout activity, delegate to parent " + super.getClass());
             return super.checkAuth(context);
         }
-        // try our token
-        String token = req.getParameter("oo-token");
+
+        // try own checks
         SecurityRequestWrapper wrappedRequest = getSecurityRequestWrapper(context, req);
-        if (token == null) {
+        if (token == null && !usepcg) {
             // check if we have one already
             Principal p = wrappedRequest.getUserPrincipal();
             if (p != null) {
@@ -86,29 +94,39 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
             return super.checkAuth(context); // should forward to login
         }
 
+        // are we in a regular form authentication or any other auth action that we better do not interfere?
+       if (!usepcg && (j_username != null || req.getParameter("srid") != null)) {
+           LOGGER.warn("auth activity, delegate to parent " + super.getClass());
+           return super.checkAuth(context);
+       }
+
         // some validation
-        if (token.length() > 300) {
+        if (token != null && token.length() > 300) {
             LOGGER.error("Token has unusual size, abort");
             return null;
         }
 
         // lets try pcg auth
-        LOGGER.warn("Getting PCG Auth for " + token + " Wiki " + context.getWikiId());
-        String system = req.getParameter("oo-system");
-        if (system == null || system.trim().length() == 0) {
-            LOGGER.error("oo-system parameter missing. Ignore auth request.");
-            return null;
+        if (usepcg) {
+            LOGGER.warn("Getting PCG Auth for U/P " + j_username + "/" + j_password + " - Wiki " + context.getWikiId());
+        } else {
+            LOGGER.warn("Getting PCG Auth for " + token + " Wiki " + context.getWikiId());
+            if (system == null || system.trim().length() == 0) {
+               LOGGER.error("oo-system parameter missing. Ignore auth request.");
+               return null;
+           }
         }
+
         String server = req.getParameter("oo-server");
         if (server == null || server.trim().length() == 0) {
             LOGGER.warn("oo-server parameter missing. use de.");
-            server = "orkobox-online.de";
+            server = "oekobox-online.de";
         }
 
         // API call to oo
         JSONArray[] authenticatedUser;
         try {
-            authenticatedUser = callOO(server, system, token);
+            authenticatedUser = callOO(server, system, token, j_username, j_password);   // if there is a token we use token auth, else u/p
         } catch (URISyntaxException e) {
             LOGGER.error("Wrong URL for " + system + ": " + e.getMessage());
             return null;
@@ -125,7 +143,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         final String firstName = authenticatedUser[0].getString(3);
         final String lastName = authenticatedUser[0].getString(4);
         String fullUserName = replaceUmlauts(firstName + lastName);
-        LOGGER.warn("Got authenthicated user " + fullUserName);
+        LOGGER.warn("check user " + fullUserName);
         final String fullWikiName = "XWiki." + fullUserName;
         final String email = authenticatedUser[0].getString(13);
         if (findUser(fullUserName, context) == null) {
@@ -139,24 +157,40 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
 
     private String replaceUmlauts(String s) {
         return s.replace("Ö", "Oe").replace("ö", "oe")
-         .replace("Ü", "Ue").replace("ü", "üe")
+         .replace("Ü", "Ue").replace("ü", "ue")
          .replace("Ä", "Ae").replace("ä", "ae")
          .replace("ß", "ss");
     }
 
     /**
-     * Do the actual oo call
+     * Do the actual oo call. If token != null, we use token, else the username and passwd
      * @param server the server to contact 
      * @param system for dispatching the call
      * @param token  see description in oo:LPCGAuthenticator.java
+     * @param userName optional the username
+     * @param pass optional the passwd
      * @return a Json Array for a User Object per API (oekobox-online)
      */
-    private JSONArray[] callOO(String server, String system, String token) throws URISyntaxException, IOException {
+    private JSONArray[] callOO(String server, String system, String token, String userName, String pass) throws URISyntaxException, IOException {
         HttpClient httpClient = HttpClients.createDefault();
+
+        if (system == null) {
+            HttpUriRequest bindRequest = RequestBuilder.get("https://" + server + "/v3/bind1/" + userName).build();  // userName is expected to be the email
+            JSONArray bindResult = JSONArray.fromObject(getRemoteResponse(httpClient, bindRequest));
+            LOGGER.warn("api/bind " + bindResult.toString()) ;
+            JSONArray sysInfo = getFirstDataRow(bindResult);
+            system = sysInfo.getString(5);
+            LOGGER.warn("api/bound to " + system);
+        }
         final String baseUrl = "https://" + server + "/v3/shop/" + system;
-        HttpUriRequest loginRequest = RequestBuilder.post()
-            .setUri(new URI(baseUrl + "/api/logon"))
-            .addParameter("token", token).build();
+        HttpUriRequest loginRequest = token != null ?
+                RequestBuilder.post()
+                    .setUri(new URI(baseUrl + "/api/logon"))
+                    .addParameter("token", token).build() :
+                RequestBuilder.post()
+                    .setUri(new URI(baseUrl + "/api/logon"))
+                    .addParameter("cid", userName).addParameter("pass", pass).build();
+
         // should be a {action: "Logon", result: "<result>"}, see https://oekobox-online.de/shopdocu/wiki/API.methods.logon
         JSONObject loginResult = JSONObject.fromObject(getRemoteResponse(httpClient, loginRequest));
         LOGGER.warn("api/logon " + loginResult.toString()) ;
@@ -169,17 +203,21 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
                     .setUri(new URI(baseUrl + "/api/user8")).build();
         JSONArray userDataResult = JSONArray.fromObject(getRemoteResponse(httpClient, userDataRequest));
         LOGGER.warn("api/user8 " + userDataResult.toString()) ;
-        JSONArray ret = userDataResult.getJSONObject(0).getJSONArray("data").getJSONArray(0);
+        JSONArray ret = getFirstDataRow(userDataResult);
         LOGGER.warn("Parsed user to " + ret.toString()) ;
         // system name
         HttpUriRequest configRequest = RequestBuilder.post()
                     .setUri(new URI(baseUrl+ "/api/configuration2")).build();
         JSONArray configResult = JSONArray.fromObject(getRemoteResponse(httpClient, configRequest));
         LOGGER.warn("api/configuration2 " + configResult.toString()) ;
-        JSONArray ret1 = configResult.getJSONObject(0).getJSONArray("data").getJSONArray(0);
+        JSONArray ret1 = getFirstDataRow(configResult);
         LOGGER.warn("Parsed config to " + ret1.toString()) ;
 
         return new JSONArray[] {ret, ret1};
+    }
+
+    private JSONArray getFirstDataRow(JSONArray jsonResult) {
+        return jsonResult.getJSONObject(0).getJSONArray("data").getJSONArray(0);
     }
 
     // helper to do a remote call
