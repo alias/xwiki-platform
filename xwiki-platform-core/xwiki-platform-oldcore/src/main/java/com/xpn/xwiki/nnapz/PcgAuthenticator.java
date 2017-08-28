@@ -91,7 +91,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
                     return new XWikiUser(name.startsWith("XWiki.") ? name : "XWiki." + name);
                 }
             }
-            return super.checkAuth(context); // should forward to login
+            return super.checkAuth(context); // should forward to login    
         }
 
         // are we in a regular form authentication or any other auth action that we better do not interfere?
