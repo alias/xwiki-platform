@@ -41,11 +41,12 @@ import java.util.Map;
  * * check out with long filenames enabled in git and in windows10
  * * use the settings.xml from
  * * 1) clean "XWIKI Platform - Legacy - Old Core"
- * * 2) rebuild "XWIKI Platform - Old Core"
- * * 3) build "XWIKI Platform - Legacy - Old Core"  (repacks somehow)
+ * * 2) install "XWIKI Platform - Old Core"
+ * * 3) install "XWIKI Platform - Legacy - Old Core"  (repacks somehow)
  * * 4) copy the resulting jar (xwiki-platform-legacy-oldcore-9.6.1-SNAPSHOT.jar)
- *         and override the installed xwiki-platform-legacy-oldcore-9.6.jar
- *
+ *         and override the installed xwiki-platform-legacy-oldcore-9.6.jar:
+ *      cp  ~bob/xwiki-platform-legacy-oldcore-9.6.1-SNAPSHOT.jar /var/lib/tomcat8/webapps/xwiki/WEB-INF/lib/xwiki-platform-legacy-oldcore-9.6.jar
+ *   5) restart tomcat
  * From studying http://platform.xwiki.org/xwiki/bin/view/AdminGuide/Authentication ff (and sandbox)
  *
  * Use xwiki.authentication.authclass=com.xpn.xwiki.nnapz.PcgAuthenticator in config
@@ -70,7 +71,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         String token = req.getParameter("oo-token");
         String system = req.getParameter("oo-system");
 
-        LOGGER.warn("*** checkAuth: " + usepcg + "/" + j_username + "/" + token + "/" + system);
+        LOGGER.warn("*** checkAuth 1: " + usepcg + "/" + j_username + "/" + token + "/" + system);
         // are we in a regular form authentication or any other auth action that we better do not interfere?
         if (req.getPathInfo().toLowerCase().contains("logout")) {
             LOGGER.warn("logout activity, delegate to parent " + super.getClass());
@@ -142,7 +143,7 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         // we assume BobSchulze camelcase usernames
         final String firstName = authenticatedUser[0].getString(3);
         final String lastName = authenticatedUser[0].getString(4);
-        String fullUserName = replaceUmlauts(firstName + lastName);
+        String fullUserName = makeWikiName(firstName + lastName);
         LOGGER.warn("check user " + fullUserName);
         final String fullWikiName = "XWiki." + fullUserName;
         final String email = authenticatedUser[0].getString(13);
@@ -155,11 +156,12 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         return new XWikiUser(fullWikiName);
     }
 
-    private String replaceUmlauts(String s) {
-        return s.replace("Ö", "Oe").replace("ö", "oe")
-         .replace("Ü", "Ue").replace("ü", "ue")
-         .replace("Ä", "Ae").replace("ä", "ae")
-         .replace("ß", "ss");
+    private String makeWikiName(String s) {
+        return s.replaceAll("Ö", "Oe").replaceAll("ö", "oe")
+         .replaceAll("Ü", "Ue").replaceAll("ü", "ue")
+         .replaceAll("Ä", "Ae").replaceAll("ä", "ae")
+         .replaceAll("ß", "ss")
+         .replaceAll(" ","");
     }
 
     /**
