@@ -149,7 +149,11 @@ public class PcgAuthenticator extends XWikiAuthServiceImpl {
         final String email = authenticatedUser[0].getString(13);
         if (findUser(fullUserName, context) == null) {
             // add this to xwiki.cfg: wiki.users.initialGroups=XWiki.XWikiAllGroup,XWiki.PCG-User
-            createUser(fullUserName, firstName, lastName, authenticatedUser[1].getString(0) + " (" + system + ")", email, context);
+            String company = authenticatedUser[0].getString(30);
+            if (company == null || company.trim().length() == 0) {
+                company = authenticatedUser[1].getString(0);
+            }
+            createUser(fullUserName, firstName, lastName, company + " (" + system + ")", email, context);
         }
 
         wrappedRequest.setUserPrincipal(new SimplePrincipal(context.getWikiId() + ":" + fullUserName));
