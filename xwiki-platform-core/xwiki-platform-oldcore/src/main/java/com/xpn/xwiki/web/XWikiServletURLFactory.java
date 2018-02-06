@@ -138,7 +138,7 @@ public class XWikiServletURLFactory extends XWikiDefaultURLFactory
         // Check reverse-proxy mode (e.g. Apache's mod_proxy_http).
         String proxyHost = StringUtils.substringBefore(context.getRequest().getHeader("x-forwarded-host"), ",");
         if (!StringUtils.isEmpty(proxyHost)) {
-            return proxyHost;
+        //    return proxyHost;        // Bob: this prevents reading xwiki.home!
         }
         // If the reverse proxy does not support the x-forwarded-host parameter
         // we allow the user to force the the host name by using the xwiki.home param.
